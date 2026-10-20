@@ -17,6 +17,7 @@ import {
 import set from 'lodash/set';
 import type {
 	IExecuteFunctions,
+	INode,
 	INodeExecutionData,
 	INodeType,
 	INodeTypeBaseDescription,
@@ -66,6 +67,52 @@ async function deriveKey(passphrase: string, salt: Buffer, keylen: number): Prom
 			else resolve(key);
 		});
 	});
+}
+
+async function decryptSymmetric(
+	node: INode,
+	value: string,
+	passphrase: string,
+	cipher: SymmetricCipher,
+	itemIndex: number,
+): Promise<string> {
+	const keyLength = CIPHER_KEY_LENGTHS[cipher];
+	const payload = Buffer.from(value, 'base64');
+
+	const headerLength = 1 + SYMMETRIC_SALT_LENGTH + SYMMETRIC_IV_LENGTH + SYMMETRIC_AUTH_TAG_LENGTH;
+
+	if (payload.length < headerLength) {
+		throw new NodeOperationError(node, 'Ciphertext is malformed or truncated', {
+			itemIndex,
+		});
+	}
+
+	const version = payload[0];
+	if (version !== SYMMETRIC_FORMAT_VERSION) {
+		throw new NodeOperationError(
+			node,
+			`Unsupported ciphertext version 0x${version.toString(16).padStart(2, '0')}`,
+			{ itemIndex },
+		);
+	}
+
+	const ivStart = 1 + SYMMETRIC_SALT_LENGTH;
+	const tagStart = ivStart + SYMMETRIC_IV_LENGTH;
+	const ctStart = tagStart + SYMMETRIC_AUTH_TAG_LENGTH;
+
+	const salt = payload.subarray(1, ivStart);
+	const iv = payload.subarray(ivStart, tagStart);
+	const authTag = payload.subarray(tagStart, ctStart);
+	const ciphertext = payload.subarray(ctStart);
+
+	const key = await deriveKey(passphrase, salt, keyLength);
+	const decipher = createDecipheriv(cipher as CipherGCMTypes, key, iv);
+
+	decipher.setAuthTag(authTag);
+
+	const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+
+	return plaintext.toString('utf8');
 }
 
 const versionDescription: INodeTypeDescription = {
@@ -780,37 +827,14 @@ export class CryptoV2 implements INodeType {
 					try {
 						if (mode === 'symmetric') {
 							const cipher = this.getNodeParameter('cipher', i) as SymmetricCipher;
-							const keyLength = CIPHER_KEY_LENGTHS[cipher];
-							const payload = Buffer.from(value, 'base64');
-							const headerLength =
-								1 + SYMMETRIC_SALT_LENGTH + SYMMETRIC_IV_LENGTH + SYMMETRIC_AUTH_TAG_LENGTH;
-							if (payload.length < headerLength) {
-								throw new NodeOperationError(
-									this.getNode(),
-									'Ciphertext is malformed or truncated',
-									{ itemIndex: i },
-								);
-							}
-							const version = payload[0];
-							if (version !== SYMMETRIC_FORMAT_VERSION) {
-								throw new NodeOperationError(
-									this.getNode(),
-									`Unsupported ciphertext version 0x${version.toString(16).padStart(2, '0')}`,
-									{ itemIndex: i },
-								);
-							}
-							const ivStart = 1 + SYMMETRIC_SALT_LENGTH;
-							const tagStart = ivStart + SYMMETRIC_IV_LENGTH;
-							const ctStart = tagStart + SYMMETRIC_AUTH_TAG_LENGTH;
-							const salt = payload.subarray(1, ivStart);
-							const iv = payload.subarray(ivStart, tagStart);
-							const authTag = payload.subarray(tagStart, ctStart);
-							const ciphertext = payload.subarray(ctStart);
-							const key = await deriveKey(encryptionPassphrase, salt, keyLength);
-							const decipher = createDecipheriv(cipher as CipherGCMTypes, key, iv);
-							decipher.setAuthTag(authTag);
-							const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-							newValue = plaintext.toString('utf8');
+
+							newValue = await decryptSymmetric(
+								this.getNode(),
+								value,
+								encryptionPassphrase,
+								cipher,
+								i,
+							);
 						} else {
 							const oaepHash = this.getNodeParameter('oaepHash', i, 'sha256') as string;
 							const decrypted = privateDecrypt(
