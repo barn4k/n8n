@@ -542,6 +542,11 @@ const versionDescription: INodeTypeDescription = {
 					value: 'asymmetric',
 					description: 'Encrypt with an RSA public key, decrypt with an RSA private key',
 				},
+				{
+					name: 'Two-Step (RSA + AES-CBC)',
+					value: 'asym_sym',
+					description: 'Decrypt the symmetric key with RSA, then decrypt data with AES-CBC',
+				},
 			],
 			default: 'symmetric',
 			displayOptions: {
@@ -586,7 +591,7 @@ const versionDescription: INodeTypeDescription = {
 			displayOptions: {
 				show: {
 					action: ['encrypt', 'decrypt'],
-					mode: ['asymmetric'],
+					mode: ['asymmetric', 'asym_sym'],
 				},
 			},
 			required: true,
